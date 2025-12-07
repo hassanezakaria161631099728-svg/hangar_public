@@ -406,12 +406,34 @@ def FEM2D_frame_axial_ends(nodes, elements, elem_props, loads, constraints, defa
         # [N1, V1, M1, N2, V2, M2] in local element coords (N = axial)
         axial_ends[e, 0] = internal[0]   # axial at node1 end (kN)
         axial_ends[e, 1] = internal[3]   # axial at node2 end (kN)
-        axial_avg[e] = 0.5 * (axial_ends[e,0] + axial_ends[e,1])
-        shear_forces[e, 0] = internal[1]
+        #axial_avg[e] = 0.5 * (axial_ends[e,0] + axial_ends[e,1])
+        shear_forces[e, 0] = -internal[1]
         shear_forces[e, 1] = internal[4]
-        end_moments[e, 0] = internal[2]
+        end_moments[e, 0] = -internal[2]
         end_moments[e, 1] = internal[5]
-    return u, reactions, axial_avg, axial_ends, shear_forces, end_moments
+    # --- build vertical N, V, M arrays ---
+    N_list = []
+    V_list = []
+    M_list = []
+
+    for e in range(n_elems):
+        # N
+        N_list.append(axial_ends[e, 0])         # node 1 end
+        N_list.append(axial_ends[e, 1])         # node 2 end
+
+        # V (shear)
+        V_list.append(shear_forces[e, 0])      # node 1 end
+        V_list.append(shear_forces[e, 1])      # node 2 end
+
+        # M (bending moment)
+        M_list.append(end_moments[e, 0])       # node 1 end
+        M_list.append(end_moments[e, 1])       # node 2 end
+
+    N_vec = np.array(N_list, dtype=float).reshape(-1, 1)
+    V_vec = np.array(V_list, dtype=float).reshape(-1, 1)
+    M_vec = np.array(M_list, dtype=float).reshape(-1, 1)
+
+    return u, reactions, N_vec, V_vec, M_vec
 
 def organize_NVM(axial_ends, shear_forces, end_moments):
     """
