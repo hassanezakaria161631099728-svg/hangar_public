@@ -404,7 +404,7 @@ def FEM2D_frame_axial_ends(nodes, elements, elem_props, loads, constraints, defa
         internal = k_local @ u_e - f_local
         # internal vector components:
         # [N1, V1, M1, N2, V2, M2] in local element coords (N = axial)
-        axial_ends[e, 0] = internal[0]   # axial at node1 end (kN)
+        axial_ends[e, 0] = -internal[0]   # axial at node1 end (kN)
         axial_ends[e, 1] = internal[3]   # axial at node2 end (kN)
         #axial_avg[e] = 0.5 * (axial_ends[e,0] + axial_ends[e,1])
         shear_forces[e, 0] = -internal[1]
