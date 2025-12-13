@@ -134,10 +134,82 @@ Tables = [Tdistributed_loadG,Tnodal_loadG,T_axial_forces,T_shear_forces,T_bendin
 sheetNames = ["Tdistributed_loadG","Tnodal_loadG","T_axial_forces","T_shear_forces","T_bending_moments","T_displacements_reactions"]
 expxlsx(Tables, os.path.join(excelDir, "chapterIV-1.xlsx"), sheetNames)
 #%%
-from shared_functions.FEM2D import plot_frame
+import pandas as pd
+import numpy as np
+import os
+from shared_functions.FEM import plot_frame2,FEM2D_frame2
+from shared_functions.FEM2D import FEM2D_frame_axial_ends
+from shared_functions.expxlsx import expxlsx
 nodes=[[0,0],[0,7],[9,9],[18,7],[18,0]]
 elements=[[0,1],[1,2],[2,3],[3,4]]
-
-plot_frame(nodes, elements,save_path="steel_frame.png")
+constraints = [0,1,2,  3*4, 3*4+1, 3*4+2]   # all DOFs at node 0 and node 4 are fixed on the gound
+#frame properties 
+A_rafter = 84.5*10e-4
+I_rafter = 23130*10e-8
+A_column = 131.4*10e-4
+I_column = 19270*10e-8
+E=210e6
+elem_props = [
+# element 0: left column
+    {"E": E, "A": A_column, "I": I_column, "q": 0, "load_type": "global"},
+#element 1: left rafter
+    {"E": E, "A": A_rafter, "I": I_rafter, "q": -195, "load_type": "global"},
+#element 2: right rafter
+    {"E": E, "A": A_rafter, "I": I_rafter, "q": -195, "load_type": "global"},
+#element 3: right column
+    {"E": E, "A": A_column, "I": I_column, "q": 0, "load_type": "global"},
+]
+#loads
+loads = [[4,-1387.1],[10,-1387.1]] 
+plot_frame2(nodes, elements, elem_props, loads ,constraints, load_scale=0.001, q_scale=0.001, show_labels=True)
+u, R, N, V, M=\
+FEM2D_frame2(nodes, elements, elem_props, loads, constraints, default_E=210e6)
+# Directory where hangar.py lives
+baseDir = os.path.dirname(__file__)
+# Excel folder is inside this directory
+excelDir = os.path.join(baseDir, "excel")
+Tables = [pd.DataFrame(u),pd.DataFrame(R),pd.DataFrame(N),pd.DataFrame(V),pd.DataFrame(M)]
+sheetNames = ["V","M","RD","u"]
+expxlsx(Tables, os.path.join(excelDir, "frame.xlsx"), sheetNames)
 
 # %%
+import numpy as np
+import pandas as pd
+import os
+from shared_functions.FEM import create_X_horizontal_truss,plot_truss,FEM2D_frame2,plot_frame2,FEM2D
+from shared_functions.expxlsx import expxlsx
+#truss X bracing roof
+#nodes, elements = create_X_horizontal_truss(4, 4.5, 4)
+#nodes=[[0,0],[4.5,0],[9,0],[13.5,0],[18,0],[0,4],[4.5,4],[9,4],[13.5,4],[18,4]]
+#elements=[[0,5],[1,6],[2,7],[3,8],[4,9], #purlins
+#          [0,1],[1,2],[2,3],[3,4],[5,6],[6,7],[7,8],[8,9],#rafter
+#          [0,6],[5,1],[1,7],[6,2],[2,8],[7,3],[3,9],[8,4],#diagonals  
+#       ]                                   
+#truss A wall bracing 
+nodes=[[0,0],[0,7],[2,7],[4,7],[4,0]]
+elements=[[1,2],[2,3],[0,1],[4,3],[0,2],[2,4]]
+#Loads for each truss case
+#loads = np.array([[1,1282.6], [3,2815.6], [5,3066.1], [7,2815.6], [9,1282.6]]) 
+#loads = np.array([[1,-1157.03876], [3,-2200.230815], [5,-2246.597696], [7,-2087.170172], [9,-721.0281682]]) 
+loads1=[[0,3334.130615],[2,8965.394952]]
+loads2=[[0,-3334.130615],[2,-7786.433877]]
+constraints = np.array([0, 1, 8, 9])
+plot_truss(nodes, elements, loads1, constraints,load_scale=10e-5)
+plot_truss(nodes, elements, loads2, constraints,load_scale=10e-5)
+E=210e6
+# Areas *1e-4 convert cm2 to m2
+A_h = 21.236 * 1e-4   # horizontal eave purlin 
+A_v = 131.364 * 1e-4    # vertical column
+A_d = 12.267  * 1e-4   # diagonal 
+u1, reactions1, axial_forces1, elem_types=\
+FEM2D(A_h, A_v, A_d, nodes, elements, loads1, constraints, E=210e6)
+u2, reactions2, axial_forces2, _ =\
+FEM2D(A_h, A_v, A_d, nodes, elements, loads2, constraints, E=210e6)
+# Directory where hangar.py lives
+baseDir = os.path.dirname(__file__)
+# Excel folder is inside this directory
+excelDir = os.path.join(baseDir, "excel")
+Tables = [pd.DataFrame(u1),pd.DataFrame(reactions1),pd.DataFrame(axial_forces1),pd.DataFrame(elem_types),
+pd.DataFrame(u2),pd.DataFrame(reactions2),pd.DataFrame(axial_forces2)]
+sheetNames = ["u1","reactions1","axial_forces1","elem_types","u2","reactions2","axial_forces2"]
+expxlsx(Tables, os.path.join(excelDir, "roofbracing.xlsx"), sheetNames)
