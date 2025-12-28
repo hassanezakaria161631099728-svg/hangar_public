@@ -123,13 +123,15 @@ baseDir = os.path.dirname(__file__)
 # Excel folder is inside this directory
 excelDir = os.path.join(baseDir, "excel")
 hangarf = os.path.join(excelDir, "hangar.xlsx")
+chI = os.path.join(excelDir, "chapterI.xlsx")
 chII_1 = os.path.join(excelDir, "chapterII-1.xlsx")
 chII_2 = os.path.join(excelDir, "chapterII-2.xlsx")
 chIII_1 = os.path.join(excelDir, "chapterIII-1.xlsx")
 chIII_2 = os.path.join(excelDir, "chapterIII-2.xlsx")
 E=210e6 #Kpa
+#frame(hangarf,chI,chII_1,chIII_1,chIII_2,chII_2):
 (Tdistributed_loadG,Tnodal_loadG,T_axial_forces,T_shear_forces,
-T_bending_moments,T_displacements_reactions)=frame(hangarf,chII_1,chIII_1,chIII_2,chII_2)
+T_bending_moments,T_displacements_reactions)=frame(hangarf,chI,chII_1,chIII_1,chIII_2,chII_2)
 Tables = [Tdistributed_loadG,Tnodal_loadG,T_axial_forces,T_shear_forces,T_bending_moments,T_displacements_reactions]
 sheetNames = ["Tdistributed_loadG","Tnodal_loadG","T_axial_forces","T_shear_forces","T_bending_moments","T_displacements_reactions"]
 expxlsx(Tables, os.path.join(excelDir, "chapterIV-1.xlsx"), sheetNames)
