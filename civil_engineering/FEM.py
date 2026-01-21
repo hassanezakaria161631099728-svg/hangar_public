@@ -570,46 +570,47 @@ def plot_portal_frame(L=12, hp=6, rise=2, save_svg=False, filename="portal_frame
     plt.show()
 
 def plot_frame(nodes, elements, elem_props, loads, constraints, scale_load=0.3):
-    """
-    Visual frame plot:
-    - nodes
-    - elements
-    - supports (auto-detected)
-    - nodal loads
-    - distributed loads (local or global)
-    """
 
     nodes = np.asarray(nodes, dtype=float)
     elements = np.asarray(elements, dtype=int)
 
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    # -----------------------------------------------------------------
-    # 1. Draw Elements
-    # -----------------------------------------------------------------
+    # --------------------------------------------------------------
+    # 1. Draw Elements (with color coding)
+    # --------------------------------------------------------------
     for e, (n1, n2) in enumerate(elements):
         x1, y1 = nodes[n1]
         x2, y2 = nodes[n2]
 
-        ax.plot([x1, x2], [y1, y2], color="black", linewidth=2)
+        dx = x2 - x1
+        dy = y2 - y1
 
-    # -----------------------------------------------------------------
+        # Determine element type by orientation
+        if abs(dx) < 1e-6:          # vertical
+            color = "yellow"
+        elif abs(dy) < 1e-6:        # horizontal
+            color = "green"
+        else:                       # diagonal
+            color = "blue"
+
+        ax.plot([x1, x2], [y1, y2], color=color, linewidth=3)
+
+    # --------------------------------------------------------------
     # 2. Draw Nodes
-    # -----------------------------------------------------------------
+    # --------------------------------------------------------------
     for i, (x, y) in enumerate(nodes):
         ax.plot(x, y, 'ko')
         ax.text(x + 0.05, y + 0.05, f"{i}", fontsize=9)
 
-    # -----------------------------------------------------------------
-    # 3. Supports (detected from constraints)
-    # -----------------------------------------------------------------
-    fixed = set()
-    pinned = dict()    # track UX+UY
-    roller_y = dict()  # only UY
+    # --------------------------------------------------------------
+    # 3. Supports (constraints)
+    # --------------------------------------------------------------
+    pinned = {}
 
     for c in constraints:
         node = c // 3
-        dof = c % 3  # 0=UX,1=UY,2=RZ
+        dof = c % 3
 
         if node not in pinned:
             pinned[node] = [False, False, False]
@@ -621,90 +622,95 @@ def plot_frame(nodes, elements, elem_props, loads, constraints, scale_load=0.3):
         x, y = nodes[node]
 
         if ux and uy and rz:
-            ax.plot(x, y, 's', color="purple", markersize=10)  # fixed
-        elif ux and uy:
-            # pinned
-            ax.plot(x, y, marker=(3, 0, -90), color="blue", markersize=13)
-        elif uy:
-            # roller vertical
+            # fully fixed
+            ax.plot(x, y, 's', color="purple", markersize=10)
+
+        elif ux and uy and not rz:
+            # **ball joint** (your request)
+            ax.plot(x, y, 'o', color="red", markersize=12, fillstyle="none")
+
+        elif uy and not ux:
+            # vertical roller
             ax.plot(x, y, 'o', color="green", markersize=10)
 
-    # -----------------------------------------------------------------
-    # 4. Nodal loads
-    # -----------------------------------------------------------------
+        else:
+            # just in case of rare combos
+            ax.plot(x, y, 'o', color="black")
+
+    # --------------------------------------------------------------
+    # 4. Nodal Loads (now BLUE, and moved outward)
+    # --------------------------------------------------------------
     for dof, P in loads:
         node = dof // 3
         comp = dof % 3
         x, y = nodes[node]
 
-        if comp == 0:  # Fx
-            ax.arrow(x, y, scale_load*np.sign(P), 0,
-                     head_width=0.1, fc='red', ec='red')
-        elif comp == 1:  # Fy
-            ax.arrow(x, y, 0, scale_load*np.sign(P),
-                     head_width=0.1, fc='red', ec='red')
-        elif comp == 2:  # Moment
-            r = 0.25
-            theta1 = 0
+        offset = 0.25  # push arrow outward so it is visible
+
+        if comp == 0:      # Fx
+            ax.arrow(x + offset*np.sign(P), y,
+                     scale_load*np.sign(P), 0,
+                     head_width=0.1, fc='blue', ec='blue')
+
+        elif comp == 1:    # Fy
+            ax.arrow(x, y + offset*np.sign(P),
+                     0, scale_load*np.sign(P),
+                     head_width=0.1, fc='blue', ec='blue')
+
+        elif comp == 2:    # Mz
+            r = 0.3
             theta2 = -180 if P < 0 else 180
-            arc = Arc((x, y), r, r, theta1=theta1, theta2=theta2,
-                      color='red', linewidth=2)
+            arc = Arc((x, y), r, r, theta1=0, theta2=theta2,
+                      color='blue', linewidth=2)
             ax.add_patch(arc)
 
-            # arrowhead
-            ax.arrow(x + r/2, y, -0.001*np.sign(P), 0,
-                     head_width=0.08, fc='red', ec='red')
-
-    # -----------------------------------------------------------------
-    # 5. Distributed Loads (local or global)
-    # -----------------------------------------------------------------
+    # --------------------------------------------------------------
+    # 5. Distributed Loads (skip if q = 0)
+    # --------------------------------------------------------------
     for e, prop in enumerate(elem_props):
+
         if 'q' not in prop and 'w' not in prop:
             continue
 
-        q_raw = prop.get('q', prop.get('w', 0.0))
+        q_raw = float(prop.get('q', prop.get('w', 0.0)))
+
+        # nothing to draw if zero
+        if abs(q_raw) < 1e-12:
+            continue
+
         load_type = prop.get('load_type', 'local')
 
         n1, n2 = elements[e]
         x1, y1 = nodes[n1]
         x2, y2 = nodes[n2]
 
-        # element direction
         dx, dy = x2 - x1, y2 - y1
         L = np.hypot(dx, dy)
         C, S = dx/L, dy/L
 
-        # local y-axis direction (global)
+        # local y-axis direction in global coords
         e_y_local = np.array([-S, C])
 
-        # evaluate q in GLOBAL coordinates for plotting
+        # convert load to global coordinates
         if load_type == "local":
-            q = float(q_raw)
-            w_vec = q * e_y_local  # arrow direction in global
+            w_vec = q_raw * e_y_local
+        else:
+            w_vec = np.array([q_raw, 0]) if np.isscalar(q_raw) else q_raw
 
-        else:  # GLOBAL input
-            if hasattr(q_raw, "__len__"):
-                w_vec = np.array([q_raw[0], q_raw[1]], dtype=float)
-            else:
-                w_vec = np.array([0.0, q_raw], dtype=float)
-
-        # draw several arrows along the element
-        n_arrows = 5
-        for i in range(1, n_arrows):
-            t = i / n_arrows
+        # draw 5 arrows along the element
+        for i in range(1, 5):
+            t = i / 5
             xp = x1 + t * dx
             yp = y1 + t * dy
-
-            ax.arrow(xp,
-                     yp,
-                     scale_load * w_vec[0],
-                     scale_load * w_vec[1],
+            ax.arrow(xp, yp,
+                     scale_load*w_vec[0],
+                     scale_load*w_vec[1],
                      head_width=0.1,
                      fc='red', ec='red')
 
-    # -----------------------------------------------------------------
+    # --------------------------------------------------------------
     # Final formatting
-    # -----------------------------------------------------------------
+    # --------------------------------------------------------------
     ax.set_aspect('equal', adjustable='box')
     ax.grid(True)
     ax.set_xlabel("X")
@@ -867,36 +873,36 @@ def plot_frame_results(nodes, elements, elem_props, loads, constraints,
 
 def FEM2D_frame(nodes, elements, elem_props, loads, constraints, default_E=210e6):
     """
-    2D frame FEM solver (axial + bending + shear).
-    Extended: supports distributed loads given in local or global form.
-    - If elem_props[e]['load_type'] == 'local' (default): q is local -Y (scalar).
-    - If elem_props[e]['load_type'] == 'global': q can be scalar (qy) or 2-vector (qx,qy).
-      It is converted to local q as: q_local = - w_global . e_loc_y, where e_loc_y = [-S, C].
-      (This yields a scalar q_local that matches the original element equivalent nodal force routine.)
-    Units: keep consistent with your project (original code used kN, kN/m, E in kN/m^2).
+    Modified 2D frame FEM solver that returns axial force at both ends of each element.
+    Parameters same as your original function, plus:
+      - elem_props[e] may include 'w' : global vertical uniform load (kN/m, positive downwards).
+        If 'w' is provided, it's resolved into local transverse q_local and axial p_axial.
+      - If 'q' is given in elem_props it is interpreted as local -Y uniform load (kN/m).
+    Returns
+    -------
+    u, reactions, axial_avg, axial_ends, shear_forces, end_moments
+      - axial_avg: (n_elems,) average axial (kN) same sign conv as before (+ tension)
+      - axial_ends: (n_elems,2) [axial_at_node1, axial_at_node2] in local coordinates
     """
     nodes = np.asarray(nodes, dtype=float)
     elements = np.asarray(elements, dtype=int)
     n_nodes = nodes.shape[0]
     n_elems = elements.shape[0]
     n_dofs = 3 * n_nodes
-
-    K = np.zeros((n_dofs, n_dofs), dtype=float)
-    F = np.zeros(n_dofs, dtype=float)
-
+    K = np.zeros((n_dofs, n_dofs))
+    F = np.zeros(n_dofs)
     def T_matrix(C, S):
-        R = np.array([[C, S, 0.0],
-                      [-S, C, 0.0],
-                      [0.0, 0.0, 1.0]])
+        R = np.array([[C, S, 0],
+                      [-S, C, 0],
+                      [0, 0, 1]])
         T = np.zeros((6, 6))
         T[:3, :3] = R
         T[3:, 3:] = R
         return T
-
-    axial_forces = np.zeros(n_elems, dtype=float)
-    end_moments = np.zeros((n_elems, 2), dtype=float)
-    shear_forces = np.zeros((n_elems, 2), dtype=float)
-
+    axial_avg = np.zeros(n_elems)
+    axial_ends = np.zeros((n_elems, 2))
+    end_moments = np.zeros((n_elems, 2))
+    shear_forces = np.zeros((n_elems, 2))
     # --- Assembly loop ---
     for e in range(n_elems):
         n1, n2 = elements[e]
@@ -904,28 +910,35 @@ def FEM2D_frame(nodes, elements, elem_props, loads, constraints, default_E=210e6
         x2, y2 = nodes[n2]
         dx, dy = x2 - x1, y2 - y1
         L = np.hypot(dx, dy)
-        if L <= 0:
-            raise ValueError(f"Element {e} has zero length (nodes {n1}, {n2}).")
         C, S = dx / L, dy / L
-
-        prop = elem_props[e] if (elem_props is not None and e < len(elem_props)) else {}
+        prop = elem_props[e]
         A = prop.get('A', 1e-6)
         I = prop.get('I', 0.0)
         E = prop.get('E', default_E)
-        q_raw = prop.get('q', prop.get('w', 0.0))
-        load_type = prop.get('load_type', 'local')
+        # q defined as local -Y uniform load (kN/m)
+        q_local = prop.get('q', 0.0)
+        # w defined as global vertical uniform load (kN/m, positive downwards)
+        w_global = prop.get('w', 0.0)
+        # resolve global vertical load into local components:
+        # local = R @ global; for global (0, -w_global) (negative because downwards),
+        # local axial component p_axial = C*0 + S*(-w_global) = - S * w_global
+        # (we take positive axial in +x local direction; sign depends on your convention)
+        p_axial_from_w =  -S * w_global  # kN/m along local +x
+        # note: the local transverse q_effective = q_local + (C * -w_global)
+        # but if you intentionally provide q_local, treat it as local already.
+        # Here we treat both: total local transverse load = q_local + (-C * w_global)
+        q_from_w =  -C * w_global
+        q_total = q_local + q_from_w
         etype = prop.get('type', 'beam')
-
         # stiffness
         k_ax = E * A / L
         if I > 0 and etype == 'beam':
-            k_b11 = 12.0 * E * I / L**3
-            k_b12 = 6.0 * E * I / L**2
-            k_b22 = 4.0 * E * I / L
-            k_b22_off = 2.0 * E * I / L
+            k_b11 = 12 * E * I / L**3
+            k_b12 = 6 * E * I / L**2
+            k_b22 = 4 * E * I / L
+            k_b22_off = 2 * E * I / L
         else:
             k_b11 = k_b12 = k_b22 = k_b22_off = 0.0
-
         k_local = np.array([
             [ k_ax,  0.0,    0.0,   -k_ax,   0.0,    0.0],
             [ 0.0,  k_b11,  k_b12,   0.0,   -k_b11,  k_b12],
@@ -933,72 +946,42 @@ def FEM2D_frame(nodes, elements, elem_props, loads, constraints, default_E=210e6
             [-k_ax,  0.0,    0.0,    k_ax,   0.0,    0.0],
             [ 0.0, -k_b11, -k_b12,   0.0,    k_b11, -k_b12],
             [ 0.0,  k_b12,  k_b22_off, 0.0, -k_b12,  k_b22]
-        ], dtype=float)
-
+        ])
         # transform
         T = T_matrix(C, S)
         k_global = T.T @ k_local @ T
-
         dof = [3*n1, 3*n1+1, 3*n1+2, 3*n2, 3*n2+1, 3*n2+2]
         K[np.ix_(dof, dof)] += k_global
-
-        # --- distributed load conversion ---
-        # Determine q_local (scalar in local -Y sense) from q_raw and load_type
-        q_local = 0.0
-        if abs(np.asarray(q_raw, dtype=float).sum()) > 0:  # quick check if non-zero
-            if load_type == 'local':
-                # q_raw expected to be scalar (local -Y). If array given, take second component.
-                if hasattr(q_raw, '__len__') and not isinstance(q_raw, (str, bytes)):
-                    # if vector-like, try to use second component as local-y (fallback)
-                    try:
-                        q_local = float(q_raw[1])
-                    except Exception:
-                        q_local = float(q_raw[0])
-                else:
-                    q_local = float(q_raw)
-            elif load_type == 'global':
-                # interpret q_raw as either scalar (qy) or 2-vector (qx, qy)
-                if hasattr(q_raw, '__len__') and not isinstance(q_raw, (str, bytes)):
-                    wgx = float(q_raw[0])
-                    wgy = float(q_raw[1])
-                else:
-                    # scalar -> treat as global vertical component qy
-                    wgx = 0.0
-                    wgy = float(q_raw)
-                # e_loc_y (local +Y) in global coords is [-S, C], local -Y is negative of that.
-                e_loc_y = np.array([-S, C])
-                w_global = np.array([wgx, wgy])
-                # q_local must be scalar consistent with element convention (positive = local -Y)
-                q_local = - np.dot(w_global, e_loc_y)
-            else:
-                raise ValueError(f"Unknown load_type '{load_type}' for element {e}")
-        else:
-            q_local = 0.0
-
-        # equivalent nodal forces (for q_local) in local coordinates then transform to global
-        if abs(q_local) > 1e-12:
-            f_local = np.array([0.0, q_local*L/2.0, q_local*L**2/12.0,
-                                0.0, q_local*L/2.0, -q_local*L**2/12.0], dtype=float)
-            F[dof] += T.T @ f_local
-
+        # equivalent nodal forces (for total q_total (local -Y) AND axial p_axial_from_w)
+        if abs(q_total) > 1e-12 or abs(p_axial_from_w) > 1e-12:
+            # transverse & moment parts (local)
+            f_local = np.array([
+                0.0,
+                q_total * L / 2.0,
+                q_total * L**2 / 12.0,
+                0.0,
+                q_total * L / 2.0,
+                - q_total * L**2 / 12.0
+            ])
+            # add axial distributed-load equivalent nodal axial forces:
+            # for a uniform axial line load p (kN/m) along +x, equivalent nodal axial forces are:
+            # [p*L/2, 0, 0, p*L/2, 0, 0]  (signs depend on sign of p)
+            f_local[0] += p_axial_from_w * L / 2.0
+            f_local[3] += p_axial_from_w * L / 2.0
+            # transform to global and add
+            F[np.ix_(dof)] += T.T @ f_local
     # --- point loads ---
     for dof, val in loads:
         F[int(dof)] += val
-
     # --- solve system ---
     all_dofs = np.arange(n_dofs)
     free = np.setdiff1d(all_dofs, constraints)
-    u = np.zeros(n_dofs, dtype=float)
+    u = np.zeros(n_dofs)
     K_ff = K[np.ix_(free, free)]
     F_ff = F[free]
-    try:
-        u[free] = np.linalg.solve(K_ff, F_ff)
-    except np.linalg.LinAlgError as exc:
-        raise np.linalg.LinAlgError("Stiffness matrix singular for free DOFs. Check constraints/model connectivity.") from exc
-
+    u[free] = np.linalg.solve(K_ff, F_ff)
     reactions = (K @ u - F)[constraints]
-
-    # --- postprocess (axial, shear, moments) ---
+    # --- postprocess (axial at both ends, shear, moments) ---
     for e in range(n_elems):
         n1, n2 = elements[e]
         dof = [3*n1, 3*n1+1, 3*n1+2, 3*n2, 3*n2+1, 3*n2+2]
@@ -1006,48 +989,25 @@ def FEM2D_frame(nodes, elements, elem_props, loads, constraints, default_E=210e6
         x2, y2 = nodes[n2]
         dx, dy = x2 - x1, y2 - y1
         L = np.hypot(dx, dy)
-        if L <= 0:
-            raise ValueError(f"Element {e} has zero length (nodes {n1}, {n2}).")
         C, S = dx / L, dy / L
-
-        prop = elem_props[e] if (elem_props is not None and e < len(elem_props)) else {}
+        prop = elem_props[e]
         A = prop.get('A', 1e-6)
         I = prop.get('I', 0.0)
         E = prop.get('E', default_E)
-        q_raw = prop.get('q', prop.get('w', 0.0))
-        load_type = prop.get('load_type', 'local')
-        etype = prop.get('type', 'beam')
-
-        # recompute q_local the same way as in assembly
-        if abs(np.asarray(q_raw, dtype=float).sum()) > 0:
-            if load_type == 'local':
-                if hasattr(q_raw, '__len__') and not isinstance(q_raw, (str, bytes)):
-                    try:
-                        q_local = float(q_raw[1])
-                    except Exception:
-                        q_local = float(q_raw[0])
-                else:
-                    q_local = float(q_raw)
-            else:  # global
-                if hasattr(q_raw, '__len__') and not isinstance(q_raw, (str, bytes)):
-                    wgx = float(q_raw[0]); wgy = float(q_raw[1])
-                else:
-                    wgx = 0.0; wgy = float(q_raw)
-                e_loc_y = np.array([-S, C])
-                q_local = - np.dot(np.array([wgx, wgy]), e_loc_y)
-        else:
-            q_local = 0.0
-
-        # same stiffness again
+        q_local = prop.get('q', 0.0)
+        w_global = prop.get('w', 0.0)
+        p_axial_from_w = - S * w_global
+        q_from_w = - C * w_global
+        q_total = q_local + q_from_w
+        # rebuild local stiffness
         k_ax = E * A / L
-        if I > 0 and etype == 'beam':
-            k_b11 = 12.0 * E * I / L**3
-            k_b12 = 6.0 * E * I / L**2
-            k_b22 = 4.0 * E * I / L
-            k_b22_off = 2.0 * E * I / L
+        if I > 0 and prop.get('type', 'beam') == 'beam':
+            k_b11 = 12 * E * I / L**3
+            k_b12 = 6 * E * I / L**2
+            k_b22 = 4 * E * I / L
+            k_b22_off = 2 * E * I / L
         else:
             k_b11 = k_b12 = k_b22 = k_b22_off = 0.0
-
         k_local = np.array([
             [ k_ax,  0.0,    0.0,   -k_ax,   0.0,    0.0],
             [ 0.0,  k_b11,  k_b12,   0.0,   -k_b11,  k_b12],
@@ -1055,32 +1015,39 @@ def FEM2D_frame(nodes, elements, elem_props, loads, constraints, default_E=210e6
             [-k_ax,  0.0,    0.0,    k_ax,   0.0,    0.0],
             [ 0.0, -k_b11, -k_b12,   0.0,    k_b11, -k_b12],
             [ 0.0,  k_b12,  k_b22_off, 0.0, -k_b12,  k_b22]
-        ], dtype=float)
-
-        # transformations
-        R = np.array([[C, S, 0.0],
-                      [-S, C, 0.0],
-                      [0.0, 0.0, 1.0]])
+        ])
+        # transform and compute local element displacement
+        R = np.array([[C, S, 0],
+                      [-S, C, 0],
+                      [0, 0, 1]])
         Tm = np.zeros((6,6))
         Tm[:3,:3] = R
         Tm[3:,3:] = R
-
-        u_e = Tm.T @ u[dof]    # FIXED: use transpose for consistent local displacements
-
-        if abs(q_local) > 1e-12:
-            f_local = np.array([0.0, q_local*L/2.0, q_local*(L**2)/12.0,
-                                0.0, q_local*L/2.0, -q_local*(L**2)/12.0], dtype=float)
+        u_e = Tm @ u[dof]
+        # local f_local (same as in assembly)
+        if abs(q_total) > 1e-12 or abs(p_axial_from_w) > 1e-12:
+            f_local = np.array([
+                0.0,
+                q_total * L / 2.0,
+                q_total * L**2 / 12.0,
+                0.0,
+                q_total * L / 2.0,
+                - q_total * L**2 / 12.0
+            ])
+            f_local[0] += p_axial_from_w * L / 2.0
+            f_local[3] += p_axial_from_w * L / 2.0
         else:
-            f_local = np.zeros(6, dtype=float)
-
+            f_local = np.zeros(6)
         internal = k_local @ u_e - f_local
-
-        axial_forces[e] = (E * A / L) * (u_e[3] - u_e[0])
+        # internal vector components:
+        # [N1, V1, M1, N2, V2, M2] in local element coords (N = axial)
+        axial_ends[e, 0] = -internal[0]   # axial at node1 end (kN)
+        axial_ends[e, 1] = internal[3]   # axial at node2 end (kN)
+        #axial_avg[e] = 0.5 * (axial_ends[e,0] + axial_ends[e,1])
         shear_forces[e, 0] = -internal[1]
         shear_forces[e, 1] = internal[4]
         end_moments[e, 0] = -internal[2]
         end_moments[e, 1] = internal[5]
-
     # --- build vertical N, V, M arrays ---
     N_list = []
     V_list = []
@@ -1088,8 +1055,8 @@ def FEM2D_frame(nodes, elements, elem_props, loads, constraints, default_E=210e6
 
     for e in range(n_elems):
         # N
-        N_list.append(axial_forces[e])         # node 1 end
-        N_list.append(axial_forces[e])         # node 2 end (same magnitude but opposite sign normally)
+        N_list.append(axial_ends[e, 0])         # node 1 end
+        N_list.append(axial_ends[e, 1])         # node 2 end
 
         # V (shear)
         V_list.append(shear_forces[e, 0])      # node 1 end
@@ -1105,266 +1072,6 @@ def FEM2D_frame(nodes, elements, elem_props, loads, constraints, default_E=210e6
 
     return u, reactions, N_vec, V_vec, M_vec
 
-def frame2d_solver(nodes, elements, E, A, I,
-                   point_loads=None, udl=None,   # udl: list of per-element dicts or None
-                   constraints=None):
-    """
-    2D frame solver (Euler-Bernoulli) - linear elastic
-    Units must be consistent (e.g. kN and m).
-    Nodes : array-like (n_nodes x 2)
-    Elements: array-like (n_elems x 2)  (0-based indices)
-    E, A, I : scalars or arrays of length n_elems
-    point_loads: list of [dof_index, value] OR dict node -> [Fx, Fy, M]
-    udl: list of length n_elems with either None or:
-         {'type':'local','q':[qx_local,qy_local]} OR
-         {'type':'global','q':[qx_global,qy_global]}
-         Convention used below: qy_local positive DOWN is typical for gravity.
-    constraints: list/array of fixed global DOF indices (0-based),
-                 or boolean mask length 3*n_nodes
-    Returns: dict with keys:
-      'u' : global DOF displacement vector (3*n_nodes,)
-      'reactions' : full reactions vector (3*n_nodes,)
-      'element_forces' : list of per-element dicts with local f vector [Fx_i,Fy_i,Mi,Fx_j,Fy_j,Mj]
-      'info' : summary arrays: N_i, N_j, V_i, V_j, M_i, M_j
-    """
-
-    # --- convert inputs ---
-    nodes = np.array(nodes, dtype=float)
-    elements = np.array(elements, dtype=int)
-    n_nodes = nodes.shape[0]
-    n_elems = elements.shape[0]
-    ndof = 3 * n_nodes
-
-    # expand E,A,I to arrays if scalars
-    E_arr = np.full(n_elems, E, dtype=float) if np.isscalar(E) else np.array(E, dtype=float)
-    A_arr = np.full(n_elems, A, dtype=float) if np.isscalar(A) else np.array(A, dtype=float)
-    I_arr = np.full(n_elems, I, dtype=float) if np.isscalar(I) else np.array(I, dtype=float)
-
-    # prepare global matrices
-    K = np.zeros((ndof, ndof))
-    F = np.zeros(ndof)
-
-    # helper: local element stiffness (6x6) for frame element in local coords
-    def k_local_frame(E, A, I, L):
-        """6x6 local stiffness for beam-column 2D (u_x,u_y,theta per node) in order [ux_i,uy_i,ri, ux_j,uy_j,rj]"""
-        k = np.zeros((6,6))
-        # axial
-        k[0,0] =  A*E / L
-        k[0,3] = -A*E / L
-        k[3,0] = -A*E / L
-        k[3,3] =  A*E / L
-        # bending
-        k[1,1] =  12*E*I / L**3
-        k[1,2] =   6*E*I / L**2
-        k[1,4] = -12*E*I / L**3
-        k[1,5] =   6*E*I / L**2
-
-        k[2,1] =   6*E*I / L**2
-        k[2,2] =   4*E*I / L
-        k[2,4] =  -6*E*I / L**2
-        k[2,5] =   2*E*I / L
-
-        k[4,1] = -12*E*I / L**3
-        k[4,2] =  -6*E*I / L**2
-        k[4,4] =  12*E*I / L**3
-        k[4,5] =  -6*E*I / L**2
-
-        k[5,1] =   6*E*I / L**2
-        k[5,2] =   2*E*I / L
-        k[5,4] =  -6*E*I / L**2
-        k[5,5] =   4*E*I / L
-        return k
-
-    # rotation 6x6
-    def T_matrix(C, S):
-        R = np.array([[C, S, 0],
-                      [-S, C, 0],
-                      [0,  0, 1]])
-        T = np.zeros((6,6))
-        T[0:3,0:3] = R
-        T[3:6,3:6] = R
-        return T
-
-    # UDL -> equivalent local nodal load vector (6x) for element:
-    # q_local = [qx_local (axial per length), qy_local (transverse per length)]
-    # Sign convention: local positive y is UP. If you have qy positive DOWN (gravity),
-    # pass qy_local as negative value (or code below negates if required).
-    def udl_equivalent_local(q_local, L):
-        qx, qy = q_local[0], q_local[1]
-        f = np.zeros(6)
-        # axial contributions (consistently distributed)
-        f[0] = qx * L / 2.0
-        f[3] = qx * L / 2.0
-        # transverse (consistent) for beam: assuming qy is *positive upward*
-        # For the usual case qy_positive_down, use qy_local = -q (so qy_local positive upward)
-        f[1] = qy * L / 2.0
-        f[2] = qy * L**2 / 12.0
-        f[4] = qy * L / 2.0
-        f[5] = - qy * L**2 / 12.0
-        return f
-
-    # assemble element stiffnesses and add equivalent nodal loads
-    for e in range(n_elems):
-        n1, n2 = elements[e]
-        x1, y1 = nodes[n1]
-        x2, y2 = nodes[n2]
-        dx = x2 - x1; dy = y2 - y1
-        L = np.hypot(dx, dy)
-        C = dx / L; S = dy / L
-
-        Ke_local = k_local_frame(E_arr[e], A_arr[e], I_arr[e], L)
-        T = T_matrix(C, S)
-        Ke_global = T.T @ Ke_local @ T
-
-        # assemble into global K
-        dof_map = [3*n1, 3*n1+1, 3*n1+2, 3*n2, 3*n2+1, 3*n2+2]
-        for a in range(6):
-            for b in range(6):
-                K[dof_map[a], dof_map[b]] += Ke_global[a,b]
-
-        # distributed loads for this element
-        if udl is not None and udl[e] is not None:
-            entry = udl[e]
-            if entry.get('type','local') == 'local':
-                q_local = entry['q']  # assume given as [qx_local, qy_local_local_upwards]
-                # if user passed qy as positive DOWN (common), they should pass q_local[1] negative.
-                f_local = udl_equivalent_local(q_local, L)
-            else:
-                # global udl specified: convert to local first
-                qg = np.array(entry['q'], dtype=float)  # [qx_global, qy_global] global axes (positive right/up)
-                # local = R * global where R = [[C,S],[-S,C]]^T? For displacement rotation we used R above.
-                # To convert global vector qg to local ql: q_local = [C*S?] Actually treat distributed vector at each point:
-                # For forces per length: q_local = [ qx_local, qy_local ] where
-                # qx_local =  C * qg[0] + S * qg[1]
-                # qy_local = -S * qg[0] + C * qg[1]
-                qx_local =  C * qg[0] + S * qg[1]
-                qy_local = -S * qg[0] + C * qg[1]
-                f_local = udl_equivalent_local([qx_local, qy_local], L)
-
-            # transform to global equivalent nodal loads and add
-            f_global = T.T @ f_local
-            for a in range(6):
-                F[dof_map[a]] += f_global[a]
-
-    # apply point loads
-    if point_loads is not None:
-        # accept list of [dof,val] or dict node->[Fx,Fy,M]
-        if isinstance(point_loads, dict):
-            for node, vec in point_loads.items():
-                i = int(node)
-                F[3*i:3*i+3] += np.array(vec, dtype=float)
-        else:
-            for dof, val in point_loads:
-                F[int(dof)] += float(val)
-
-    # default constraints
-    if constraints is None:
-        constraints = np.array([], dtype=int)
-    else:
-        constraints = np.array(constraints, dtype=int)
-
-    all_dofs = np.arange(ndof)
-    free = np.setdiff1d(all_dofs, constraints)
-    fixed = np.array(constraints, dtype=int)
-
-    # Partition and solve
-    if free.size > 0:
-        Kff = K[np.ix_(free, free)]
-        Ff = F[free]
-        # solve Kff * u_f = Ff
-        u = np.zeros(ndof)
-        u_f = np.linalg.solve(Kff, Ff)
-        u[free] = u_f
-    else:
-        u = np.zeros(ndof)
-
-    # reactions
-    reactions = K @ u - F
-
-# --------------------------------------------------------------
-# ELEMENT INTERNAL FORCES (local)
-# --------------------------------------------------------------
-    element_forces = []
-
-    N_i = np.zeros(n_elems); N_j = np.zeros(n_elems)
-    V_i = np.zeros(n_elems); V_j = np.zeros(n_elems)
-    M_i = np.zeros(n_elems); M_j = np.zeros(n_elems)
-
-    for e in range(n_elems):
-     n1, n2 = elements[e]
-     x1, y1 = nodes[n1]; x2, y2 = nodes[n2]
-     dx = x2 - x1; dy = y2 - y1
-     L = np.hypot(dx, dy)
-     C = dx / L; S = dy / L
-
-    # stiffness + rotation
-     Ke_local = k_local_frame(E_arr[e], A_arr[e], I_arr[e], L)
-     T = T_matrix(C, S)
-
-    # extract local displacement vector
-     dof_map = [3*n1, 3*n1+1, 3*n1+2, 3*n2, 3*n2+1, 3*n2+2]
-     u_e_global = u[dof_map]
-     u_e_local  = T @ u_e_global
-
-    # internal nodal forces from stiffness
-     f_int_local = Ke_local @ u_e_local
-
-    # distributed fixed-end actions
-     f_eq_local = np.zeros(6)
-     if udl is not None and udl[e] is not None:
-        entry = udl[e]
-        if entry.get("type", "local") == "local":
-            q_local = entry["q"]
-            f_eq_local = udl_equivalent_local(q_local, L)
-        else:
-            qg = np.array(entry["q"], float)
-            qx_local =  C*qg[0] + S*qg[1]
-            qy_local = -S*qg[0] + C*qg[1]
-            f_eq_local = udl_equivalent_local([qx_local, qy_local], L)
-
-    # total FE nodal forces (usual ones)
-     f_total_local = f_int_local - f_eq_local
-
-    # --------------------------------------------------------------
-    # TRUE AXIAL FORCE (constant along element) RDM6 STYLE
-    # N = EA/L * (u_jx_local - u_ix_local)
-    # RDM6 convention: compression = negative
-    # --------------------------------------------------------------
-    uix = u_e_local[0]   # axial disp i
-    ujx = u_e_local[3]   # axial disp j
-    # RDM6 uses NEGATIVE for compression → keep that
-    N_i[e] = uix
-    N_j[e] = ujx     # SAME SIGN, no flip
-
-    # Shear + bending from FEM nodal actions
-    V_i[e] = f_total_local[1]
-    M_i[e] = f_total_local[2]
-    V_j[e] = f_total_local[4]
-    M_j[e] = f_total_local[5]
-
-    # --- build vertical N, V, M arrays ---
-    N_list = []
-    V_list = []
-    M_list = []
-
-    for e in range(n_elems):
-        # N
-        N_list.append(N_i)         # node 1 end
-        N_list.append(N_j)         # node 2 end
-
-        # V (shear)
-        V_list.append(V_i)      # node 1 end
-        V_list.append(V_j)      # node 2 end
-
-        # M (bending moment)
-        M_list.append(M_i)       # node 1 end
-        M_list.append(M_j)       # node 2 end
-
-    N_vec = np.array(N_list, dtype=float).reshape(-1, 1)
-    V_vec = np.array(V_list, dtype=float).reshape(-1, 1)
-    M_vec = np.array(M_list, dtype=float).reshape(-1, 1)
-
-    return u, reactions, N_vec, V_vec, M_vec
 
 def beam_internal_forces(
     L,
@@ -1415,506 +1122,76 @@ def beam_internal_forces(
     N = np.zeros_like(x)
     return x, N, V, M
 
-import numpy as np
+def generate_grid(nx, ny, Lx, Ly):
+    nodes = []
 
-def FEM2D_frame2(nodes, elements, elem_props, loads, constraints, default_E=210e6):
-    nodes = np.asarray(nodes, dtype=float)
-    elements = np.asarray(elements, dtype=int)
-    n_nodes = nodes.shape[0]
-    n_elems = elements.shape[0]
-    n_dofs = 3 * n_nodes
+    for j in range(ny + 1):
+        for i in range(nx + 1):
+            node_id = j * (nx + 1) + i
+            x = i * Lx
+            y = j * Ly
+            nodes.append((node_id, x, y))
 
-    K = np.zeros((n_dofs, n_dofs), dtype=float)
-    F = np.zeros(n_dofs, dtype=float)
+    return nodes
 
-    def T_matrix(C, S):
-        R = np.array([[C, S, 0.0],
-                      [-S, C, 0.0],
-                      [0.0, 0.0, 1.0]])
-        T = np.zeros((6, 6))
-        T[:3, :3] = R
-        T[3:, 3:] = R
-        return T
+def plot_grid(nodes, nx, ny):
+    fig, ax = plt.subplots(figsize=(6, 6))
 
-    axial_forces = np.zeros((n_elems, 2), dtype=float)
-    end_moments = np.zeros((n_elems, 2), dtype=float)
-    shear_forces = np.zeros((n_elems, 2), dtype=float)
+    for node_id, x, y in nodes:
+        ax.plot(x, y, 'ks',markersize=8)  # node
+        ax.text(x + 0.05, y + 0.05, str(node_id), fontsize=10)
 
-    # --- Assembly loop ---
-    for e in range(n_elems):
-        n1, n2 = elements[e]
-        x1, y1 = nodes[n1]
-        x2, y2 = nodes[n2]
-        dx, dy = x2 - x1, y2 - y1
-        L = np.hypot(dx, dy)
-        if L <= 0:
-            raise ValueError(f"Element {e} has zero length (nodes {n1}, {n2}).")
-        C, S = dx / L, dy / L
+    # draw grid lines
+    for j in range(ny + 1):
+        ax.plot(
+            [nodes[j*(nx+1)][1], nodes[j*(nx+1) + nx][1]],
+            [nodes[j*(nx+1)][2], nodes[j*(nx+1) + nx][2]],
+            'k--', alpha=0.5
+        )
 
-        prop = elem_props[e] if (elem_props is not None and e < len(elem_props)) else {}
-        A = prop.get('A', 1e-6)
-        I = prop.get('I', 0.0)
-        E = prop.get('E', default_E)
-        q_raw = prop.get('q', prop.get('w', 0.0))
-        load_type = prop.get('load_type', 'local')
-        etype = prop.get('type', 'beam')
+    for i in range(nx + 1):
+        ax.plot(
+            [nodes[i][1], nodes[i + ny*(nx+1)][1]],
+            [nodes[i][2], nodes[i + ny*(nx+1)][2]],
+            'k--', alpha=0.5
+        )
 
-        # stiffness
-        k_ax = E * A / L
-        if I > 0 and etype == 'beam':
-            k_b11 = 12.0 * E * I / L**3
-            k_b12 = 6.0 * E * I / L**2
-            k_b22 = 4.0 * E * I / L
-            k_b22_off = 2.0 * E * I / L
+    ax.set_aspect('equal')
+    ax.set_xlabel("X")
+    ax.set_ylabel("Y")
+    ax.grid(True)
+    plt.show()
+
+def plot_grid_elevation_view(nodes, nx, nz):
+    fig, ax = plt.subplots(figsize=(6, 6))
+
+    for node_id, x, z in nodes:
+        if z == 0:
+            ax.plot(x, z, 'ks', markersize=8)  # ground-level column
         else:
-            k_b11 = k_b12 = k_b22 = k_b22_off = 0.0
+            ax.plot(x, z, 'ko', markersize=6)  # upper nodes
+
+        ax.text(x + 0.05, z + 0.05, str(node_id), fontsize=10)
+
+    # horizontal grid lines (constant z)
+#    for j in range(nz + 1):
+#        ax.plot(
+#            [nodes[j*(nx+1)][1], nodes[j*(nx+1) + nx][1]],
+#           [nodes[j*(nx+1)][2], nodes[j*(nx+1) + nx][2]],
+#            'k--', alpha=0.5
+#        )
+
+    # vertical grid lines (constant x)
+#    for i in range(nx + 1):
+#        ax.plot(
+#            [nodes[i][1], nodes[i + nz*(nx+1)][1]],
+#            [nodes[i][2], nodes[i + nz*(nx+1)][2]],
+#            'k--', alpha=0.5
+#        )
+
+    ax.set_aspect('equal')
+    ax.set_xlabel("X")
+    ax.set_ylabel("Z")
+    ax.grid(True)
+    plt.show()
 
-        k_local = np.array([
-            [ k_ax,  0.0,    0.0,   -k_ax,   0.0,    0.0],
-            [ 0.0,  k_b11,  k_b12,   0.0,   -k_b11,  k_b12],
-            [ 0.0,  k_b12,  k_b22,   0.0,   -k_b12,  k_b22_off],
-            [-k_ax,  0.0,    0.0,    k_ax,   0.0,    0.0],
-            [ 0.0, -k_b11, -k_b12,   0.0,    k_b11, -k_b12],
-            [ 0.0,  k_b12,  k_b22_off, 0.0, -k_b12,  k_b22]
-        ], dtype=float)
-
-        # transform
-        T = T_matrix(C, S)
-        k_global = T.T @ k_local @ T
-
-        dof = [3*n1, 3*n1+1, 3*n1+2, 3*n2, 3*n2+1, 3*n2+2]
-        K[np.ix_(dof, dof)] += k_global
-
-        # --- distributed load conversion to local q (scalar in local -Y sense) ---
-        q_local = 0.0
-        try:
-            q_arr = np.asarray(q_raw, dtype=float)
-            nonzero_q = np.abs(q_arr).sum() > 0
-        except Exception:
-            nonzero_q = False
-
-        if nonzero_q:
-            if load_type == 'local':
-                if hasattr(q_raw, '__len__') and not isinstance(q_raw, (str, bytes)):
-                    try:
-                        q_local = float(q_raw[1])
-                    except Exception:
-                        q_local = float(q_raw[0])
-                else:
-                    q_local = float(q_raw)
-            elif load_type == 'global':
-                if hasattr(q_raw, '__len__') and not isinstance(q_raw, (str, bytes)):
-                    wgx = float(q_raw[0]); wgy = float(q_raw[1])
-                else:
-                    wgx = 0.0; wgy = float(q_raw)
-                e_loc_y = np.array([-S, C])   # local +Y in global coords
-                w_global = np.array([wgx, wgy])
-                q_local = - np.dot(w_global, e_loc_y)  # positive = local -Y
-            else:
-                raise ValueError(f"Unknown load_type '{load_type}' for element {e}")
-        else:
-            q_local = 0.0
-
-        # equivalent nodal forces (local) then transform to global
-        if abs(q_local) > 1e-12:
-            f_local = np.array([0.0, q_local*L/2.0, q_local*L**2/12.0,
-                                0.0, q_local*L/2.0, -q_local*L**2/12.0], dtype=float)
-            F[dof] += T.T @ f_local
-
-    # --- point loads ---
-    for dof_idx, val in loads:
-        F[int(dof_idx)] += val
-
-    # --- solve system ---
-    all_dofs = np.arange(n_dofs)
-    free = np.setdiff1d(all_dofs, constraints)
-    u = np.zeros(n_dofs, dtype=float)
-    K_ff = K[np.ix_(free, free)]
-    F_ff = F[free]
-    try:
-        u[free] = np.linalg.solve(K_ff, F_ff)
-    except np.linalg.LinAlgError as exc:
-        raise np.linalg.LinAlgError("Stiffness matrix singular for free DOFs. Check constraints/model connectivity.") from exc
-
-    # reactions (make them oppose applied loads)
-    reactions = (K @ u - F)[constraints]
-
-    # --- postprocess (axial, shear, moments) ---
-    for e in range(n_elems):
-        n1, n2 = elements[e]
-        dof = [3*n1, 3*n1+1, 3*n1+2, 3*n2, 3*n2+1, 3*n2+2]
-        x1, y1 = nodes[n1]
-        x2, y2 = nodes[n2]
-        dx, dy = x2 - x1, y2 - y1
-        L = np.hypot(dx, dy)
-        if L <= 0:
-            raise ValueError(f"Element {e} has zero length (nodes {n1}, {n2}).")
-        C, S = dx / L, dy / L
-
-        prop = elem_props[e] if (elem_props is not None and e < len(elem_props)) else {}
-        A = prop.get('A', 1e-6)
-        I = prop.get('I', 0.0)
-        E = prop.get('E', default_E)
-        q_raw = prop.get('q', prop.get('w', 0.0))
-        load_type = prop.get('load_type', 'local')
-        etype = prop.get('type', 'beam')
-
-        # recompute q_local (same as assembly)
-        try:
-            q_arr = np.asarray(q_raw, dtype=float)
-            nonzero_q = np.abs(q_arr).sum() > 0
-        except Exception:
-            nonzero_q = False
-
-        if nonzero_q:
-            if load_type == 'local':
-                if hasattr(q_raw, '__len__') and not isinstance(q_raw, (str, bytes)):
-                    try:
-                        q_local = float(q_raw[1])
-                    except Exception:
-                        q_local = float(q_raw[0])
-                else:
-                    q_local = float(q_raw)
-            else:
-                if hasattr(q_raw, '__len__') and not isinstance(q_raw, (str, bytes)):
-                    wgx = float(q_raw[0]); wgy = float(q_raw[1])
-                else:
-                    wgx = 0.0; wgy = float(q_raw)
-                e_loc_y = np.array([-S, C])
-                q_local = - np.dot(np.array([wgx, wgy]), e_loc_y)
-        else:
-            q_local = 0.0
-
-        # local stiffness (same as assembly)
-        k_ax = E * A / L
-        if I > 0 and etype == 'beam':
-            k_b11 = 12.0 * E * I / L**3
-            k_b12 = 6.0 * E * I / L**2
-            k_b22 = 4.0 * E * I / L
-            k_b22_off = 2.0 * E * I / L
-        else:
-            k_b11 = k_b12 = k_b22 = k_b22_off = 0.0
-
-        k_local = np.array([
-            [ k_ax,  0.0,    0.0,   -k_ax,   0.0,    0.0],
-            [ 0.0,  k_b11,  k_b12,   0.0,   -k_b11,  k_b12],
-            [ 0.0,  k_b12,  k_b22,   0.0,   -k_b12,  k_b22_off],
-            [-k_ax,  0.0,    0.0,    k_ax,   0.0,    0.0],
-            [ 0.0, -k_b11, -k_b12,   0.0,    k_b11, -k_b12],
-            [ 0.0,  k_b12,  k_b22_off, 0.0, -k_b12,  k_b22]
-        ], dtype=float)
-
-        # transformation (global -> local)
-        R = np.array([[C, S, 0.0],
-                      [-S, C, 0.0],
-                      [0.0, 0.0, 1.0]])
-        Tm = np.zeros((6,6))
-        Tm[:3,:3] = R
-        Tm[3:,3:] = R
-
-        # local equivalent nodal loads (same as assembly)
-        if abs(q_local) > 1e-12:
-            f_local = np.array([0.0, q_local*L/2.0, q_local*(L**2)/12.0,
-                                0.0, q_local*L/2.0, -q_local*(L**2)/12.0], dtype=float)
-        else:
-            f_local = np.zeros(6, dtype=float)
-
-        # local displacement vector (use transpose to be consistent with assembly)
-        u_e = Tm.T @ u[dof]
-
-        # internal vector (authoritative)
-        internal = k_local @ u_e - f_local
-
-        # extract axial/shear/moment from internal local vector
-        N_i = internal[0]
-        V_i = internal[1]
-        M_i = internal[2]
-
-        N_j = internal[3]
-        V_j = internal[4]
-        M_j = internal[5]
-
-        # store axial as average of the two end axials BUT use civil sign: compression NEGATIVE
-        axial_forces[e, 0] = N_i
-        axial_forces[e, 1] = N_j
-        # shears & moments: keep your RDM6-compatible flips
-        shear_forces[e, 0] = -V_i
-        shear_forces[e, 1] = V_j
-        end_moments[e, 0] = -M_i
-        end_moments[e, 1] = M_j
-
-    # --- build vertical N, V, M arrays ---
-    N_list = []
-    V_list = []
-    M_list = []
-
-    for e in range(n_elems):
-        # N
-        N_list.append(axial_forces[e,0])         # node 1 end
-        N_list.append(axial_forces[e,1])         # node 2 end
-
-        # V (shear)
-        V_list.append(shear_forces[e, 0])      # node 1 end
-        V_list.append(shear_forces[e, 1])      # node 2 end
-
-        # M (bending moment)
-        M_list.append(end_moments[e, 0])       # node 1 end
-        M_list.append(end_moments[e, 1])       # node 2 end
-
-    N_vec = np.array(N_list, dtype=float).reshape(-1, 1)
-    V_vec = np.array(V_list, dtype=float).reshape(-1, 1)
-    M_vec = np.array(M_list, dtype=float).reshape(-1, 1)
-
-    return u, reactions, N_vec, V_vec, M_vec
-
-def FEM2D_frame3(nodes, elements, elem_props, loads, constraints, default_E=210e6):
-    nodes = np.asarray(nodes, dtype=float)
-    elements = np.asarray(elements, dtype=int)
-    n_nodes = nodes.shape[0]
-    n_elems = elements.shape[0]
-    n_dofs = 3 * n_nodes
-
-    K = np.zeros((n_dofs, n_dofs), dtype=float)
-    F = np.zeros(n_dofs, dtype=float)
-
-    def T_matrix(C, S):
-        R = np.array([[C, S, 0.0],
-                      [-S, C, 0.0],
-                      [0.0, 0.0, 1.0]])
-        T = np.zeros((6, 6))
-        T[:3, :3] = R
-        T[3:, 3:] = R
-        return T
-
-    axial_forces = np.zeros(n_elems, dtype=float)
-    end_moments = np.zeros((n_elems, 2), dtype=float)
-    shear_forces = np.zeros((n_elems, 2), dtype=float)
-
-    # --- Assembly loop ---
-    for e in range(n_elems):
-        n1, n2 = elements[e]
-        x1, y1 = nodes[n1]
-        x2, y2 = nodes[n2]
-        dx, dy = x2 - x1, y2 - y1
-        L = np.hypot(dx, dy)
-        if L <= 0:
-            raise ValueError(f"Element {e} has zero length (nodes {n1}, {n2}).")
-        C, S = dx / L, dy / L
-
-        prop = elem_props[e] if (elem_props is not None and e < len(elem_props)) else {}
-        A = prop.get('A', 1e-6)
-        I = prop.get('I', 0.0)
-        E = prop.get('E', default_E)
-        q_raw = prop.get('q', prop.get('w', 0.0))
-        load_type = prop.get('load_type', 'local')
-        etype = prop.get('type', 'beam')
-
-        # stiffness (local)
-        k_ax = E * A / L
-        if I > 0 and etype == 'beam':
-            k_b11 = 12.0 * E * I / L**3
-            k_b12 = 6.0 * E * I / L**2
-            k_b22 = 4.0 * E * I / L
-            k_b22_off = 2.0 * E * I / L
-        else:
-            k_b11 = k_b12 = k_b22 = k_b22_off = 0.0
-
-        k_local = np.array([
-            [ k_ax,  0.0,    0.0,   -k_ax,   0.0,    0.0],
-            [ 0.0,  k_b11,  k_b12,   0.0,   -k_b11,  k_b12],
-            [ 0.0,  k_b12,  k_b22,   0.0,   -k_b12,  k_b22_off],
-            [-k_ax,  0.0,    0.0,    k_ax,   0.0,    0.0],
-            [ 0.0, -k_b11, -k_b12,   0.0,    k_b11, -k_b12],
-            [ 0.0,  k_b12,  k_b22_off, 0.0, -k_b12,  k_b22]
-        ], dtype=float)
-
-        # transform
-        T = T_matrix(C, S)
-        k_global = T.T @ k_local @ T
-
-        dof = [3*n1, 3*n1+1, 3*n1+2, 3*n2, 3*n2+1, 3*n2+2]
-        K[np.ix_(dof, dof)] += k_global
-
-        # --- distributed load conversion to local q (scalar in local -Y sense) ---
-        q_local = 0.0
-        try:
-            q_arr = np.asarray(q_raw, dtype=float)
-            nonzero_q = np.abs(q_arr).sum() > 0
-        except Exception:
-            nonzero_q = False
-
-        if nonzero_q:
-            if load_type == 'local':
-                if hasattr(q_raw, '__len__') and not isinstance(q_raw, (str, bytes)):
-                    try:
-                        q_local = float(q_raw[1])
-                    except Exception:
-                        q_local = float(q_raw[0])
-                else:
-                    q_local = float(q_raw)
-            elif load_type == 'global':
-                if hasattr(q_raw, '__len__') and not isinstance(q_raw, (str, bytes)):
-                    wgx = float(q_raw[0]); wgy = float(q_raw[1])
-                else:
-                    wgx = 0.0; wgy = float(q_raw)
-                e_loc_y = np.array([-S, C])   # local +Y in global coords
-                w_global = np.array([wgx, wgy])
-                q_local = - np.dot(w_global, e_loc_y)  # positive = local -Y
-            else:
-                raise ValueError(f"Unknown load_type '{load_type}' for element {e}")
-        else:
-            q_local = 0.0
-
-        # equivalent nodal forces (local) then transform to global
-        if abs(q_local) > 1e-12:
-            f_local = np.array([0.0, q_local*L/2.0, q_local*L**2/12.0,
-                                0.0, q_local*L/2.0, -q_local*L**2/12.0], dtype=float)
-            F[dof] += T.T @ f_local
-
-    # --- point loads ---
-    for dof_idx, val in loads:
-        F[int(dof_idx)] += val
-
-    # --- solve system ---
-    all_dofs = np.arange(n_dofs)
-    free = np.setdiff1d(all_dofs, constraints)
-    u = np.zeros(n_dofs, dtype=float)
-    K_ff = K[np.ix_(free, free)]
-    F_ff = F[free]
-    try:
-        u[free] = np.linalg.solve(K_ff, F_ff)
-    except np.linalg.LinAlgError as exc:
-        raise np.linalg.LinAlgError("Stiffness matrix singular for free DOFs. Check constraints/model connectivity.") from exc
-
-    # FIXED: reactions sign (reactions oppose applied loads)
-    reactions = -(K @ u - F)[constraints]
-
-    # --- postprocess (axial, shear, moments) using consistent local internal vector ---
-    for e in range(n_elems):
-        n1, n2 = elements[e]
-        dof = [3*n1, 3*n1+1, 3*n1+2, 3*n2, 3*n2+1, 3*n2+2]
-        x1, y1 = nodes[n1]
-        x2, y2 = nodes[n2]
-        dx, dy = x2 - x1, y2 - y1
-        L = np.hypot(dx, dy)
-        if L <= 0:
-            raise ValueError(f"Element {e} has zero length (nodes {n1}, {n2}).")
-        C, S = dx / L, dy / L
-
-        prop = elem_props[e] if (elem_props is not None and e < len(elem_props)) else {}
-        A = prop.get('A', 1e-6)
-        I = prop.get('I', 0.0)
-        E = prop.get('E', default_E)
-        q_raw = prop.get('q', prop.get('w', 0.0))
-        load_type = prop.get('load_type', 'local')
-        etype = prop.get('type', 'beam')
-
-        # recompute q_local (same as assembly)
-        try:
-            q_arr = np.asarray(q_raw, dtype=float)
-            nonzero_q = np.abs(q_arr).sum() > 0
-        except Exception:
-            nonzero_q = False
-
-        if nonzero_q:
-            if load_type == 'local':
-                if hasattr(q_raw, '__len__') and not isinstance(q_raw, (str, bytes)):
-                    try:
-                        q_local = float(q_raw[1])
-                    except Exception:
-                        q_local = float(q_raw[0])
-                else:
-                    q_local = float(q_raw)
-            else:
-                if hasattr(q_raw, '__len__') and not isinstance(q_raw, (str, bytes)):
-                    wgx = float(q_raw[0]); wgy = float(q_raw[1])
-                else:
-                    wgx = 0.0; wgy = float(q_raw)
-                e_loc_y = np.array([-S, C])
-                q_local = - np.dot(np.array([wgx, wgy]), e_loc_y)
-        else:
-            q_local = 0.0
-
-        # local stiffness (same as assembly)
-        k_ax = E * A / L
-        if I > 0 and etype == 'beam':
-            k_b11 = 12.0 * E * I / L**3
-            k_b12 = 6.0 * E * I / L**2
-            k_b22 = 4.0 * E * I / L
-            k_b22_off = 2.0 * E * I / L
-        else:
-            k_b11 = k_b12 = k_b22 = k_b22_off = 0.0
-
-        k_local = np.array([
-            [ k_ax,  0.0,    0.0,   -k_ax,   0.0,    0.0],
-            [ 0.0,  k_b11,  k_b12,   0.0,   -k_b11,  k_b12],
-            [ 0.0,  k_b12,  k_b22,   0.0,   -k_b12,  k_b22_off],
-            [-k_ax,  0.0,    0.0,    k_ax,   0.0,    0.0],
-            [ 0.0, -k_b11, -k_b12,   0.0,    k_b11, -k_b12],
-            [ 0.0,  k_b12,  k_b22_off, 0.0, -k_b12,  k_b22]
-        ], dtype=float)
-
-        # transformation (global -> local)
-        R = np.array([[C, S, 0.0],
-                      [-S, C, 0.0],
-                      [0.0, 0.0, 1.0]])
-        Tm = np.zeros((6,6))
-        Tm[:3,:3] = R
-        Tm[3:,3:] = R
-
-        # local equivalent nodal loads (same as assembly)
-        if abs(q_local) > 1e-12:
-            f_local = np.array([0.0, q_local*L/2.0, q_local*(L**2)/12.0,
-                                0.0, q_local*L/2.0, -q_local*(L**2)/12.0], dtype=float)
-        else:
-            f_local = np.zeros(6, dtype=float)
-
-        # FIXED: use transpose of Tm here so local disp vector matches assembly convention
-        u_e_local = Tm.T @ u[dof]
-
-        # internal force vector in local coords (authoritative source)
-        f_internal_local = k_local @ u_e_local - f_local
-
-        # extract consistent end-values from the local internal vector
-        N_i = f_internal_local[0]
-        V_i = f_internal_local[1]
-        M_i = f_internal_local[2]
-
-        N_j = f_internal_local[3]
-        V_j = f_internal_local[4]
-        M_j = f_internal_local[5]
-
-        # store axial as representative element axial (average of ends)
-        axial_forces[e] = 0.5 * (N_i + N_j)
-
-        # store shears (flip second end to match nodal sign continuity)
-        shear_forces[e, 0] = V_i
-        shear_forces[e, 1] = -V_j
-
-        # store moments (flip second end so nodal sign matches adjacent element)
-        end_moments[e, 0] = M_i
-        end_moments[e, 1] = -M_j
-
-    # --- build vertical N, V, M arrays ---
-    N_list = []
-    V_list = []
-    M_list = []
-
-    for e in range(n_elems):
-        # N
-        N_list.append(axial_forces[e])         # node 1 end
-        N_list.append(axial_forces[e])         # node 2 end
-
-        # V (shear)
-        V_list.append(shear_forces[e, 0])      # node 1 end
-        V_list.append(shear_forces[e, 1])      # node 2 end
-
-        # M (bending moment)
-        M_list.append(end_moments[e, 0])       # node 1 end
-        M_list.append(end_moments[e, 1])       # node 2 end
-
-    N_vec = np.array(N_list, dtype=float).reshape(-1, 1)
-    V_vec = np.array(V_list, dtype=float).reshape(-1, 1)
-    M_vec = np.array(M_list, dtype=float).reshape(-1, 1)
-
-    return u, reactions, N_vec, V_vec, M_vec
